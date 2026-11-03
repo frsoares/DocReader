@@ -5,52 +5,105 @@
 //  Created by Francisco on 31/10/26.
 //
 
+import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
 @Observable
-final class DocReaderDocument: Document {
+final class DocReaderDocument: ReadableDocument {
+    static let readableContentTypes: [UTType] = [.legacyWordDocument]
 
-    static let readableContentTypes: [UTType] = [.exampleText]
+    private(set) var content = AttributedString()
+    private(set) var importError: WordDocumentImportError?
 
-    var text: String
+    let fileURL: URL?
 
-    init(text: String = "Hello, world!") {
-        self.text = text
+    init(fileURL: URL? = nil) {
+        self.fileURL = fileURL
     }
 
     nonisolated func reader(
         configuration: sending ReadConfiguration
-    ) -> sending FileWrapperDocumentReader<String> {
+    ) -> sending FileWrapperDocumentReader<WordDocumentSnapshot> {
         FileWrapperDocumentReader(configuration) { fileWrapper in
             guard let data = fileWrapper.regularFileContents else {
-                throw CocoaError(.fileReadCorruptFile)
+                return .failure(.notARegularFile)
             }
-            return String(decoding: data, as: UTF8.self)
-        }
-    }
 
-    nonisolated func writer(
-        configuration: sending WriteConfiguration
-    ) -> sending FileWrapperDocumentWriter<String> {
-        FileWrapperDocumentWriter(configuration) { snapshot, _ in
-            FileWrapper(regularFileWithContents: Data(snapshot.utf8))
+            return WordDocumentDecoder.decode(data)
         }
     }
 
     @MainActor
-    func snapshot(contentType: UTType) async throws -> sending String {
-        text
+    func apply(
+        snapshot: sending WordDocumentSnapshot,
+        previous: sending WordDocumentSnapshot?
+    ) async throws {
+        content = snapshot.content
+        importError = snapshot.importError
+    }
+}
+
+struct WordDocumentSnapshot: Sendable {
+    let content: AttributedString
+    let importError: WordDocumentImportError?
+
+    nonisolated static func success(_ content: AttributedString) -> Self {
+        Self(content: content, importError: nil)
     }
 
-    @MainActor
-    func apply(snapshot: sending String, previous: sending String?) async throws {
-        text = snapshot
+    nonisolated static func failure(_ error: WordDocumentImportError) -> Self {
+        Self(content: AttributedString(), importError: error)
+    }
+}
+
+enum WordDocumentImportError: Error, Equatable, Sendable {
+    case emptyDocument
+    case notARegularFile
+    case nativeReadingUnavailable
+    case unsupportedOrCorrupt
+
+    var message: LocalizedStringResource {
+        switch self {
+        case .emptyDocument:
+            "This Word document is empty."
+        case .notARegularFile:
+            "This item is not a readable Word document."
+        case .nativeReadingUnavailable:
+            "Simplified text extraction is unavailable on this device. Use Preview Original to read the document."
+        case .unsupportedOrCorrupt:
+            "This Word document is damaged, encrypted, or uses unsupported features."
+        }
+    }
+}
+
+enum WordDocumentDecoder {
+    nonisolated static func decode(_ data: Data) -> WordDocumentSnapshot {
+        guard !data.isEmpty else {
+            return .failure(.emptyDocument)
+        }
+
+#if os(macOS)
+        let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+            .documentType: NSAttributedString.DocumentType.docFormat
+        ]
+
+        do {
+            let imported = try NSAttributedString(
+                data: data,
+                options: options,
+                documentAttributes: nil
+            )
+            return .success(AttributedString(imported))
+        } catch {
+            return .failure(.unsupportedOrCorrupt)
+        }
+#else
+        return .failure(.nativeReadingUnavailable)
+#endif
     }
 }
 
 extension UTType {
-    static var exampleText: UTType {
-        UTType(importedAs: "com.example.plain-text")
-    }
+    static let legacyWordDocument = UTType(importedAs: "com.microsoft.word.doc")
 }

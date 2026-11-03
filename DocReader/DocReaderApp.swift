@@ -12,8 +12,8 @@ struct DocReaderApp: App {
     var body: some Scene {
         DocumentGroup { document in
             ContentView(document: document)
-        } makeDocument: { configuration, context in
-            DocReaderDocument()
+        } makeReadableDocument: { configuration, _ in
+            DocReaderDocument(fileURL: configuration.fileURL)
         }
     }
 }
